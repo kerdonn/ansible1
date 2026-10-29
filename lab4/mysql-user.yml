@@ -1,0 +1,119 @@
+---
+# =====================================================================
+# Lab 4 (jätk): MySQL kasutajate ja autentimise haldamine
+# Autor:    Kerdon Laubert
+# Fail:     /root/playbooks/mysql-user.yml
+# Eeldus:   MySQL on paigaldatud (mysql-server.yml)
+# Kontroll: ansible-playbook --syntax-check /root/playbooks/mysql-user.yml
+#           ansible-playbook --check /root/playbooks/mysql-user.yml
+# Käivitus: ansible-playbook /root/playbooks/mysql-user.yml
+#
+# Mida playbook teeb:
+#   1. paigaldab python3-pymysql paketi (community.mysql moodulid
+#      vajavad seda MySQL-iga suhtlemiseks);
+#   2. määrab MySQL kasutajale root@localhost parooli ja vahetab
+#      autentimise auth_socket -> caching_sha2_password, mis tähendab,
+#      et ilma paroolita enam sisse logida ei saa;
+#   3. loob faili /root/.my.cnf (õigused 0600), et root saaks
+#      mysql käske kasutada ilma parooli iga kord sisestamata;
+#   4. kontrollib tulemust: ilma paroolita sisselogimine peab
+#      ebaõnnestuma ja .my.cnf abil sisselogimine õnnestuma.
+#
+# Parooli (ülesande järgi: qwerty) küsitakse käivitamisel, seega ei
+# ole see playbookis ega GitHubis avalikult kirjas.
+# =====================================================================
+- name: MySQL root-kasutaja ja paroolikaitse seadistamine
+  hosts: webservers
+
+  # Parool küsitakse playbooki käivitamisel (sisestus ei ole nähtav)
+  vars_prompt:
+    - name: mysql_root_parool
+      prompt: "MySQL root-kasutaja parool"
+      private: true
+
+  vars:
+    mysql_sokkel: /var/run/mysqld/mysqld.sock
+    # 20-märgiline "sool" parooli räsi jaoks. Tänu sellele saab moodul
+    # võrrelda olemasolevat räsi uuega ja korduval käivitamisel parooli
+    # asjatult ei muudeta (idempotentsus).
+    mysql_parooli_sool: "KerdonLab4MySQLsalt1"
+
+  tasks:
+    # ---- 0. Ainult Debian (MySQL paigaldati ainult Debiani klientidesse)
+    - name: Jätame vahele masinad, kus MySQL-i ei paigaldatud (mitte Debian)
+      ansible.builtin.meta: end_host
+      when: ansible_facts['os_family'] != 'Debian'
+
+    # ---- 1. Python MySQL draiver ---------------------------------------
+    - name: Paigaldame python3-pymysql (vajalik community.mysql moodulitele)
+      ansible.builtin.apt:
+        name: python3-pymysql
+        state: present
+        update_cache: true
+
+    - name: MySQL teenus töötab
+      ansible.builtin.service:
+        name: mysql
+        state: started
+        enabled: true
+
+    # ---- 2. root-kasutaja parool (moodul community.mysql.mysql_user) ---
+    # NB! Parameeter "password" kasutaks pluginat mysql_native_password,
+    # mis MySQL 8.4-s on vaikimisi välja lülitatud. Seepärast määrame
+    # parooli läbi plugina caching_sha2_password.
+    - name: Määrame root-kasutajale parooli ja keelame paroolita sisselogimise
+      community.mysql.mysql_user:
+        name: root                          # kasutajanimi
+        host: localhost                     # kust root tohib ühenduda
+        plugin: caching_sha2_password       # paroolipõhine autentimine
+        plugin_auth_string: "{{ mysql_root_parool }}"   # uus parool
+        salt: "{{ mysql_parooli_sool }}"    # idempotentsuse jaoks
+        priv: "*.*:ALL,GRANT"               # root-kasutaja täisõigused
+        state: present
+        # Kuidas moodul ise MySQL-iga ühendub:
+        login_unix_socket: "{{ mysql_sokkel }}"
+        login_user: root
+        login_password: "{{ mysql_root_parool }}"
+        # Esmalt proovitakse root-iga ilma paroolita (esimene käivitus,
+        # kui root kasutab veel auth_socket'it). Kui see ei õnnestu,
+        # kasutatakse login_password väärtust (korduvad käivitused).
+        check_implicit_admin: true
+
+    # ---- 3. /root/.my.cnf ----------------------------------------------
+    - name: Loome /root/.my.cnf ühenduse andmetega (loeb ainult root)
+      ansible.builtin.copy:
+        dest: /root/.my.cnf
+        owner: root
+        group: root
+        mode: "0600"
+        content: |
+          # Ansible'i loodud fail - MySQL kliendi ühenduse andmed
+          [client]
+          user=root
+          password={{ mysql_root_parool }}
+          socket={{ mysql_sokkel }}
+
+    # ---- 4. Kontroll ---------------------------------------------------
+    # --no-defaults: .my.cnf faili ei loeta, st proovime ilma paroolita
+    - name: "Kontroll 1: ilma paroolita sisselogimine peab ebaõnnestuma"
+      ansible.builtin.command: mysql --no-defaults -u root -e "SELECT 1;"
+      register: ilma_paroolita
+      changed_when: false
+      failed_when: ilma_paroolita.rc == 0
+      when: not ansible_check_mode
+
+    # Ilma lisaparameetriteta loeb mysql klient faili /root/.my.cnf
+    - name: "Kontroll 2: sisselogimine /root/.my.cnf abil peab õnnestuma"
+      ansible.builtin.command: >
+        mysql -e "SELECT CURRENT_USER() AS kasutaja, plugin, VERSION() AS versioon
+        FROM mysql.user WHERE user='root' AND host='localhost';"
+      register: my_cnf_abil
+      changed_when: false
+      when: not ansible_check_mode
+
+    - name: Näitame kontrolli tulemusi
+      ansible.builtin.debug:
+        msg:
+          - "Ilma paroolita: {{ ilma_paroolita.stderr }}"
+          - "/root/.my.cnf abil: {{ my_cnf_abil.stdout_lines | join(' | ') }}"
+      when: not ansible_check_mode

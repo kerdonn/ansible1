@@ -1,0 +1,108 @@
+---
+# =====================================================================
+# Lab 4: Veebiserveri laiendamine MySQL andmebaasiga
+# Autor:    Kerdon Laubert
+# Fail:     /root/playbooks/mysql-server.yml
+# Kontroll: ansible-playbook --syntax-check /root/playbooks/mysql-server.yml
+#           ansible-playbook --check /root/playbooks/mysql-server.yml
+# Käivitus: ansible-playbook /root/playbooks/mysql-server.yml
+#
+# Debiani tavahoidlates MySQL serverit ei ole (seal on MariaDB),
+# seepärast laeme alla MySQL ametliku APT hoidla konfiguratsioonipaketi
+# (mysql-apt-config), lisame hoidla süsteemi ja paigaldame sealt
+# mysql-server paketi (vaikimisi MySQL 8.4 LTS).
+#
+# MySQL APT hoidla sobib ainult Debiani-põhistele masinatele, seega
+# CentOS klient (klient2) jäetakse selles playbookis vahele.
+# =====================================================================
+- name: MySQL serveri paigaldamine kliendiserveritesse
+  hosts: webservers
+
+  vars:
+    allalaadimised: /root/allalaadimised
+    # Viimane versioon: https://dev.mysql.com/downloads/repo/apt/
+    mysql_apt_versioon: "0.8.40-1"
+    mysql_apt_pakett: "mysql-apt-config_{{ mysql_apt_versioon }}_all.deb"
+    mysql_apt_url: "https://dev.mysql.com/get/{{ mysql_apt_pakett }}"
+
+  tasks:
+    # ---- 0. Ainult Debian -----------------------------------------------
+    - name: Jätame vahele masinad, mis ei ole Debian (MySQL APT hoidla on Debianile)
+      ansible.builtin.meta: end_host
+      when: ansible_facts['os_family'] != 'Debian'
+
+    # ---- 1. Kataloog allalaaditud failide jaoks (moodul file) -----------
+    - name: Loome allalaadimiseks kataloog
+      ansible.builtin.file:
+        path: "{{ allalaadimised }}"
+        owner: root
+        group: root
+        mode: "0755"
+        state: directory
+
+    # ---- 2. MySQL APT hoidla paketi allalaadimine (moodul shell) --------
+    - name: Laadime MySQL APT paketi wget abil
+      ansible.builtin.shell: >
+        wget -O {{ allalaadimised }}/{{ mysql_apt_pakett }} {{ mysql_apt_url }}
+      args:
+        # Kui fail on juba olemas, siis uuesti alla ei laadita (idempotentsus)
+        creates: "{{ allalaadimised }}/{{ mysql_apt_pakett }}"
+
+    # ---- 3. gnupg - vajalik hoidla GPG-võtmete kontrollimiseks (moodul apt)
+    - name: Paigalda gnupg
+      ansible.builtin.apt:
+        name: gnupg
+        state: present
+
+    # --check režiimis ei ole allalaadimist päriselt toimunud, seega
+    # kontrollime, kas pakett ja hoidla on juba olemas. Nii ei katke
+    # --check järgmiste sammude juures.
+    - name: Kontrollime, kas MySQL APT pakett on olemas
+      ansible.builtin.stat:
+        path: "{{ allalaadimised }}/{{ mysql_apt_pakett }}"
+      register: mysql_apt_fail
+
+    # ---- 4. MySQL ametliku hoidla lisamine (moodul apt, deb=) ----------
+    # Ansible apt moodul kasutab DEBIAN_FRONTEND=noninteractive, seega
+    # valitakse vaikimisi seaded (mysql-8.4-lts) ilma küsimusteta.
+    - name: Installeerime mysql repositoorium
+      ansible.builtin.apt:
+        deb: "{{ allalaadimised }}/{{ mysql_apt_pakett }}"
+        state: present
+      when: mysql_apt_fail.stat.exists or not ansible_check_mode
+
+    # ---- 5. Pakettide nimekirja uuendamine (apt update) ----------------
+    - name: Teeme apt-le update
+      ansible.builtin.apt:
+        update_cache: true
+
+    - name: Kontrollime, kas MySQL hoidla on lisatud
+      ansible.builtin.stat:
+        path: /etc/apt/sources.list.d/mysql.list
+      register: mysql_hoidla
+
+    # ---- 6. MySQL serveri paigaldamine (moodul apt) --------------------
+    - name: Paigaldame mysql-server
+      ansible.builtin.apt:
+        name: mysql-server
+        state: present
+      when: mysql_hoidla.stat.exists or not ansible_check_mode
+
+    - name: MySQL teenus töötab ja käivitub automaatselt
+      ansible.builtin.service:
+        name: mysql
+        state: started
+        enabled: true
+      when: not ansible_check_mode
+
+    # ---- 7. Kontroll ---------------------------------------------------
+    - name: Kontrollime MySQL versiooni
+      ansible.builtin.command: mysql --version
+      register: mysql_versioon
+      changed_when: false
+      when: not ansible_check_mode
+
+    - name: Näitame MySQL versiooni
+      ansible.builtin.debug:
+        msg: "{{ inventory_hostname }}: {{ mysql_versioon.stdout }}"
+      when: not ansible_check_mode
