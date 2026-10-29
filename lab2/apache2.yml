@@ -1,0 +1,139 @@
+---
+# =====================================================================
+# Lab 2: Veebiserveri (Apache2) paigaldamise ja halduse automatiseerimine
+# Autor:    Kerdon Laubert
+# Fail:     /root/playbooks/apache2.yml
+# Kontroll: ansible-playbook --syntax-check /root/playbooks/apache2.yml
+# Kaivitus: ansible-playbook /root/playbooks/apache2.yml
+#
+# klient1 = Debian 13        -> pakett ja teenus "apache2"
+# klient2 = CentOS Stream 9  -> pakett ja teenus "httpd"
+# =====================================================================
+- name: Apache2 paigaldamine ja userdir mooduli seadistamine
+  hosts: webservers
+  vars:
+    kasutaja: user                  # tavakasutaja, kellele koduleht tehakse
+    # OS-ist soltuvad seaded (Debian / CentOS)
+    os_seaded:
+      Debian:
+        teenus: apache2
+        vaikeleht: /var/www/html/index.html
+        otsi: '^\s*(Apache2 Debian Default Page|USERi lehekylg)\s*$'
+        uus_rida: 'USERi lehekylg'
+        parast: EOF
+      RedHat:
+        teenus: httpd
+        vaikeleht: /usr/share/httpd/noindex/index.html
+        otsi: '^<h1>USERi lehekylg</h1>$'
+        uus_rida: '<h1>USERi lehekylg</h1>'
+        parast: '<body'
+    os: "{{ os_seaded[ansible_facts['os_family']] }}"
+
+  tasks:
+    # ---- 1. Veebiserveri paigaldamine ----------------------------------
+    - name: Installeerime apache2 (Debian, moodul apt)
+      ansible.builtin.apt:
+        name: apache2
+        update_cache: true
+        state: latest
+      when: ansible_facts['os_family'] == 'Debian'
+
+    - name: Installeerime httpd (CentOS, moodul dnf)
+      ansible.builtin.dnf:
+        name: httpd
+        state: latest
+      when: ansible_facts['os_family'] == 'RedHat'
+
+    - name: Kaivitame veebiserveri ja lubame selle alglaadimisel
+      ansible.builtin.service:
+        name: "{{ os.teenus }}"
+        state: started
+        enabled: true
+
+    - name: Avame tulemuuris HTTP teenuse (CentOS firewalld)
+      ansible.posix.firewalld:
+        service: http
+        permanent: true
+        immediate: true
+        state: enabled
+      when: ansible_facts['os_family'] == 'RedHat'
+
+    # ---- 2. Kasutajale public_html kaust (moodul file) ------------------
+    - name: Lubame veebiserveril kasutaja kodukausta labida (oigused 711)
+      ansible.builtin.file:
+        path: "/home/{{ kasutaja }}"
+        mode: "0711"
+
+    - name: Loome public_html kataloogi user_ile
+      ansible.builtin.file:
+        path: "/home/{{ kasutaja }}/public_html"
+        state: directory
+        owner: "{{ kasutaja }}"
+        group: "{{ kasutaja }}"
+        mode: "0755"
+
+    # ---- 3. userdir mooduli lubamine ------------------------------------
+    - name: Lubame userdir mooduli (Debian, moodul apache2_module)
+      community.general.apache2_module:
+        name: userdir
+        state: present
+      when: ansible_facts['os_family'] == 'Debian'
+
+    - name: Lubame UserDir seadistuse - kommenteerime valja "UserDir disabled" (CentOS)
+      ansible.builtin.lineinfile:
+        path: /etc/httpd/conf.d/userdir.conf
+        regexp: '^\s*UserDir\s+disabled'
+        line: '    #UserDir disabled'
+      when: ansible_facts['os_family'] == 'RedHat'
+
+    - name: Lubame UserDir public_html (CentOS)
+      ansible.builtin.lineinfile:
+        path: /etc/httpd/conf.d/userdir.conf
+        regexp: '^\s*#?\s*UserDir\s+public_html'
+        line: '    UserDir public_html'
+      when: ansible_facts['os_family'] == 'RedHat'
+
+    - name: SELinux - lubame veebiserveril kodukatalooge lugeda (CentOS)
+      ansible.posix.seboolean:
+        name: httpd_enable_homedirs
+        state: true
+        persistent: true
+      when: ansible_facts['os_family'] == 'RedHat'
+
+    # ---- 4. Taaskaivitame veebiserveri (moodul service) -----------------
+    - name: Apache2 serverile alglaadimine (restart)
+      ansible.builtin.service:
+        name: "{{ os.teenus }}"
+        state: restarted
+
+    # ---- 5. Testleht kasutaja public_html kausta (moodul copy) ----------
+    - name: Kopeerime index.html faili USER_ile kodus public_html kataloogi
+      ansible.builtin.copy:
+        src: "{{ os.vaikeleht }}"
+        dest: "/home/{{ kasutaja }}/public_html/index.html"
+        remote_src: true
+        owner: "{{ kasutaja }}"
+        group: "{{ kasutaja }}"
+        mode: "0644"
+        force: false                # olemasolevat lehte ule ei kirjutata
+
+    - name: SELinux konteksti taastamine public_html kaustale (CentOS)
+      ansible.builtin.command: "restorecon -Rv /home/{{ kasutaja }}/public_html"
+      register: restorecon_tulemus
+      changed_when: restorecon_tulemus.stdout | length > 0
+      when: ansible_facts['os_family'] == 'RedHat'
+
+    # ---- 6. Kasutaja koduleht "oma parane" (moodul lineinfile) ----------
+    - name: user index.html redigeerimine
+      ansible.builtin.lineinfile:
+        path: "/home/{{ kasutaja }}/public_html/index.html"
+        regexp: "{{ os.otsi }}"          # Debian: asendame vaikelehe pealkirja
+        line: "{{ os.uus_rida }}"
+        insertafter: "{{ os.parast }}"   # CentOS: lisame pealkirja <body> jarele
+        state: present
+
+    # ---- 7. Lopuks taaskaivitame Apache2 --------------------------------
+    - name: Alglaadimine Apache2
+      ansible.builtin.service:
+        name: "{{ os.teenus }}"
+        state: restarted

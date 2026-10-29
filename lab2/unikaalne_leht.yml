@@ -1,0 +1,35 @@
+---
+# =====================================================================
+# Lab 2 iseseisev ulesanne
+# Autor:    Kerdon Laubert
+# Fail:     /root/playbooks/unikaalne_leht.yml
+# Kaivitus: ansible-playbook /root/playbooks/unikaalne_leht.yml
+#
+# Asendab Apache2 vaikelehe igal kliendiserveril unikaalse
+# /var/www/html/index.html failiga: tervitustekst + hostinimi + IP-aadress.
+# Andmed (hostinimi, IP) tulevad Ansible'i kogutud faktidest.
+# =====================================================================
+- name: Unikaalne avaleht igale kliendiserverile
+  hosts: webservers
+  tasks:
+    - name: Loome /var/www/html/index.html kliendi hostinime ja IP-ga
+      ansible.builtin.copy:
+        dest: /var/www/html/index.html
+        owner: root
+        group: root
+        mode: "0644"
+        content: |
+          <!DOCTYPE html>
+          <html lang="et">
+          <head>
+            <meta charset="utf-8">
+            <title>{{ ansible_facts['hostname'] }} - Ansible</title>
+          </head>
+          <body style="font-family: sans-serif; margin: 40px;">
+            <h1>Tere tulemast! See leht on loodud Ansible playbook'iga.</h1>
+            <p>Kliendiserveri hostinimi: <b>{{ ansible_facts['hostname'] }}</b></p>
+            <p>Kliendiserveri IP-aadress: <b>{{ ansible_facts['default_ipv4']['address'] }}</b></p>
+            <p>Operatsioonisusteem: {{ ansible_facts['distribution'] }} {{ ansible_facts['distribution_version'] }}</p>
+            <p>Autor: Kerdon Laubert</p>
+          </body>
+          </html>
