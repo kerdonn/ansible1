@@ -1,0 +1,9 @@
+# Ansible inventory - Kerdon Laubert
+# Ansible-server: kerdon (192.168.37.193)
+[webservers]
+klient1 ansible_host=192.168.37.191 ansible_user=root
+klient2 ansible_host=192.168.34.209 ansible_user=root
+
+[webservers:vars]
+ansible_python_interpreter = /usr/bin/python3
+ansible_ssh_private_key_file = ~/.ssh/id_rsa
