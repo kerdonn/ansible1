@@ -1,0 +1,60 @@
+---
+# =====================================================================
+# Lab 3 iseseisev ulesanne 2: PHP eemaldamine kliendiserveritest
+# Autor:    Kerdon Laubert
+# Fail:     /etc/ansible/playbooks/uninst_php.yml
+# Kaivitus: ansible-playbook /etc/ansible/playbooks/uninst_php.yml
+#
+# Kasud probleemse PHP versiooni kasitsi eemaldamiseks (Debian):
+#   apt-get purge php7.*
+#   apt-get purge php7.X-common
+#   apt remove php7.X*
+# Debian 13 puhul on versioon 8.4:
+#   apt-get purge php8.4*
+#   apt-get purge php8.4-common
+#   apt remove php8.4*
+# CentOS Stream 9:
+#   dnf remove php*
+#
+# NB! Parast kuvatommiste tegemist taastada PHP playbook'iga php.yml
+# =====================================================================
+- name: PHP eemaldamine kliendiserveritest
+  hosts: webservers
+  vars:
+    veebiteenus: "{{ 'apache2' if ansible_facts['os_family'] == 'Debian' else 'httpd' }}"
+
+  tasks:
+    # ---- PHP pakettide eemaldamine koos seadistustega --------------------
+    - name: Eemaldame koik PHP paketid ja libapache2-mod-php (Debian, purge)
+      ansible.builtin.apt:
+        name:
+          - "php*"
+          - "libapache2-mod-php*"
+        state: absent
+        purge: true
+        autoremove: true
+      when: ansible_facts['os_family'] == 'Debian'
+
+    - name: Eemaldame koik PHP paketid (CentOS)
+      ansible.builtin.dnf:
+        name: "php*"
+        state: absent
+        autoremove: true
+      when: ansible_facts['os_family'] == 'RedHat'
+
+    # ---- Veebiserver taaskaivitatakse ilma PHP-ta -----------------------
+    - name: Taaskaivitame veebiserveri
+      ansible.builtin.service:
+        name: "{{ veebiteenus }}"
+        state: restarted
+
+    # ---- Kontroll: php kask ei tohi enam olemas olla ---------------------
+    - name: Kontrollime kas php kask on veel olemas (php -v)
+      ansible.builtin.command: php -v
+      register: php_kontroll
+      changed_when: false
+      failed_when: false
+
+    - name: Kontrolli tulemus
+      ansible.builtin.debug:
+        msg: "{{ 'PHP on edukalt eemaldatud' if php_kontroll.rc != 0 else 'PHP on alles: ' ~ php_kontroll.stdout_lines[0] }}"

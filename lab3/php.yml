@@ -1,0 +1,66 @@
+---
+# =====================================================================
+# Lab 3: Veebiserveri laiendamine PHP toega
+# Autor:    Kerdon Laubert
+# Fail:     /etc/ansible/playbooks/php.yml
+# Kontroll: ansible-playbook --syntax-check /etc/ansible/playbooks/php.yml
+# Kaivitus: ansible-playbook /etc/ansible/playbooks/php.yml
+#
+# php7.0 / php7.3 pakette Debian 13 ja CentOS Stream 9 repodes enam ei ole,
+# seetottu paigaldame uldise paketi "php" (Debian 13 -> PHP 8.4,
+# CentOS Stream 9 -> PHP 8.x).
+# =====================================================================
+- name: PHP paigaldamine veebiserveritele
+  hosts: webservers
+  vars:
+    veebiteenus: "{{ 'apache2' if ansible_facts['os_family'] == 'Debian' else 'httpd' }}"
+    # Iseseisev ulesanne 1: PHP testfailid (Moodle juhendis on kasutusel molemad nimed)
+    php_testfailid:
+      - phpinfo.php
+      - info.php
+
+  tasks:
+    # ---- PHP paigaldamine (moodul apt / dnf) -----------------------------
+    - name: Installeerime php, libapache2-mod-php ja php-mysql (Debian)
+      ansible.builtin.apt:
+        name:
+          - php
+          - libapache2-mod-php
+          - php-mysql
+        update_cache: true
+        state: latest
+      when: ansible_facts['os_family'] == 'Debian'
+
+    - name: Installeerime php ja php-mysqlnd (CentOS)
+      ansible.builtin.dnf:
+        name:
+          - php
+          - php-mysqlnd
+        state: latest
+      when: ansible_facts['os_family'] == 'RedHat'
+
+    - name: Kaivitame php-fpm teenuse (CentOS kasutab PHP jaoks php-fpm-i)
+      ansible.builtin.service:
+        name: php-fpm
+        state: started
+        enabled: true
+      when: ansible_facts['os_family'] == 'RedHat'
+
+    # ---- Iseseisev ulesanne 1: phpinfo fail /var/www/html/ kausta --------
+    - name: Loome PHP info failid kataloogi /var/www/html/
+      ansible.builtin.copy:
+        dest: "/var/www/html/{{ item }}"
+        owner: root
+        group: root
+        mode: "0644"
+        content: |
+          <?php
+          phpinfo();
+          ?>
+      loop: "{{ php_testfailid }}"
+
+    # ---- Veebiserveri taaskaivitus, et PHP moodul laaditaks --------------
+    - name: Alglaadimine Apache2
+      ansible.builtin.service:
+        name: "{{ veebiteenus }}"
+        state: restarted
